@@ -1,0 +1,195 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "ll"
+date: "January 2016"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+####The Weight Lifting Exercises Dataset Experiment
+Six young health participants, were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+For data recording while performing the sets, the participants were wearing four 9 degrees of freedom Razor inertial measurement units (IMU), which provide three-axes acceleration, gyroscope and magnetometer. The sensors have been mounted in the users' glove, armband, lumbar belt and dumbbell.
+
+The goal for the Weight Lifting Exercises experiement is to investigate "how (well)" an activity was performed by the wearer.  
+
+The goal of the project is to predict the manner in which they did the exercise. This is the "classe" variable in the data set.
+
+Web site:  
+http://groupware.les.inf.puc-rio.br/har.
+
+Data Source, the Weight Lifting Exercises Dataset:  
+http://groupware.les.inf.puc-rio.br/static/WLE/WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv
+
+Data Sources used for the Course Project:  
+The training data for this project are available here:  
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data (for the quiz) are available here:  
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+####Data Exploratory and Cleaning
+```{r data}
+#Reading the datasets, training and test 
+setwd("~/coursera/Practical Machine Learning")
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "./pml-training.csv")
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "./pml-testing.csv")
+training<-read.csv("./pml-training.csv",stringsAsFactors = T,na.strings=c("NA", "", "#DIV/0!"))
+quiz<-read.csv("./pml-testing.csv",stringsAsFactors = T, na.strings=c("NA", "", "#DIV/0!"))
+
+#dimension of the Weight Lifting Exercises Dataset
+dim(training)
+
+#Number of observations for each participant and exercice  
+table(training$user_name,training$classe)
+```
+The feature statistics (average, mn, max , var, etc...) are calculated for each window and have missing values for most of the observations, so they are removed from the analysis.  
+Note that for a specific participant and time of execution (timestamp variable) you know which exercise has been performed, also knowing the window number automatically tell you which type of exercise has been performed and by whom. Since the goal is to identify the type of exercise performed based on sensors measurements then the identification variables are also removed from the data set.  
+```{r cleaning}
+#Data cleaning
+#Keep only non empty features in the testing file
+allvar <- names(training)
+vBeg <- c("kurtosis_","skewness_","max_","min_","amplitude_","var_","avg_","stddev_")
+va <- vector()
+for(i in 1:length(vBeg)){ va <- c(va,grep(vBeg[i],allvar,value = FALSE))}
+training <- training[,-c(1:7,va)]
+quiz <- quiz[,-c(1:7,va)]
+```
+```{r library}
+#load all the required libraries and suppression of waning messages
+suppressWarnings(suppressMessages(library(caret, quietly=T)))
+suppressWarnings(suppressMessages(library(rpart, quietly=T)))
+suppressWarnings(suppressMessages(library(MASS, quietly=T)))
+suppressWarnings(suppressMessages(library(kernlab, quietly=T)))
+suppressWarnings(suppressMessages(library(gbm, quietly=T)))
+suppressWarnings(suppressMessages(library(plyr, quietly=T)))
+suppressWarnings(suppressMessages(library(randomForest, quietly=T)))
+```
+
+Split of the Weight Lifting Exercises Dataset in 2 parts, a simple splitting based on the outcome (classe). The first part (train) is used to explore de data and fit the models, the second (test) is used to evaluate the out of sample accuracy of each model.
+```{r createDataPartition}
+# create training set indexes with 70% of data
+set.seed(12345)
+inTrain <- createDataPartition(y=training$classe,p=0.7, list=FALSE)
+train <- training[inTrain,]
+test <- training[-inTrain,]
+dim(train)
+dim(test)
+```
+
+Identification of highly correlated predictors, some models may benefit from reducing the level of correlation between the predictors. Only one predictor variable will be kept from the group of correlated variables. It will also significantly reduce the time execution to fit the models.  
+```{r corr}
+highlyCorDescr <- findCorrelation(cor(train[,-length(train)]), cutoff = .8)
+train<-train[-highlyCorDescr[2:length(highlyCorDescr)]]
+test<-test[-highlyCorDescr[2:length(highlyCorDescr)]]
+quiz<-quiz[-highlyCorDescr[2:length(highlyCorDescr)]]
+```
+
+Use of the nearZeroVar function to identify the variables that have no variability, these variables are not useful when we want to construct a prediction model.
+
+```{r nearZeroVar, cache=TRUE}
+# print nearZeroVar table
+near0<-nearZeroVar(train,saveMetrics=TRUE)
+near0
+dim(train)
+```
+No predictor has only one distinct value or has a near zero variance, so the 41 variables from that list are those who will be used to build our prediction model.
+
+####Methodology
+For the course project, 5 machine learning classification methods will be compared:  
+* Classification Tree, CART  (rpart)  
+* Linear Discriminant Analysis (lda)  
+* Least Squares Support Vector Machine with Radial Basis Function Kernel (lssvmRadial)  
+* Stochastic Gradient Boosting (gbm)  
+* Random Forest (rf)  
+
+The models are fitted on the training part of the data set (first split) using a cross validation procedure with k=10 folds, the default cross validation method of the caret train function. The out of sample error rate will be measured on the independent test data set (second split) for all the model.  
+
+The model with the best accuracy on the test data set will be the choosen one to answer the quiz test.  
+
+* Classification Tree, CART  (rpart)
+```{r modFitrpart, cache=TRUE}
+#rpart model
+set.seed(12345)
+modFitrpart <- train(classe ~ ., method = "rpart", data = train, trControl = trainControl(method = "cv"))
+```
+```{r modFitrpartcm}
+#rpart model fit
+print(modFitrpart)
+pred_rpart<-predict(modFitrpart,newdata=test[-length(test)])
+#rpart out of sample accuracy
+cmrpart<-confusionMatrix(pred_rpart, test$classe)
+cmrpart$overall['Accuracy']
+```
+
+* Linear Discriminant Analysis (lda)
+```{r modFitlda, cache=TRUE}
+#modFitlda
+set.seed(12345)
+modFitlda <- train(classe ~ ., method = "lda", data = train, trControl = trainControl(method = "cv"))
+```
+```{r modFitldacm}
+#modFitlda model fit
+print(modFitlda)
+pred_lda<-predict(modFitlda,newdata=test[-length(test)])
+#lda out of sample accuracy
+cmlda<-confusionMatrix(pred_lda, test$classe)
+cmlda$overall['Accuracy']
+```
+
+* Least Squares Support Vector Machine with Radial Basis Function Kernel (lssvmRadial)
+```{r modFitsvm, cache=TRUE}
+#modFitsvm
+set.seed(12345)
+modFitsvm <- train(classe ~ ., method = "lssvmRadial", data = train, trControl = trainControl(method = "cv"))
+```
+```{r modFitsvmcm}
+#modFitsvm model fit
+print(modFitsvm)
+pred_svm<-predict(modFitsvm,newdata=test[-length(test)])
+#lssvmRadial out of sample accuracy
+cmsvm<-confusionMatrix(pred_svm, test$classe)
+cmsvm$overall['Accuracy']
+```
+
+* Stochastic Gradient Boosting (gbm)
+```{r modFitgbm, cache=TRUE}
+#modFitgbm
+set.seed(12345)
+modFitgbm <- train(classe ~ ., method = "gbm", data = train, trControl = trainControl(method = "cv"), verbose=FALSE)
+```
+```{r modFitgbmcm}
+#modFitgbm model fit
+print(modFitgbm)
+pred_gbm<-predict(modFitgbm,newdata=test[-length(test)])
+#gbm out of sample accuracy
+cmgbm<-confusionMatrix(pred_gbm, test$classe)
+cmgbm$overall['Accuracy']
+```
+
+* Random Forest (rf)
+```{r modFitrf, cache=TRUE}
+#modFitrf
+set.seed(12345)
+modFitrf <- train(classe ~ ., method = "rf", data = train, trControl = trainControl(method = "cv"))
+```
+```{r modFitrfcm}
+#modFitrf model fit
+print(modFitrf)
+pred_rf<-predict(modFitrf,newdata=test[-length(test)])
+#rf out of sample accuracy
+cmrf<-confusionMatrix(pred_rf, test$classe)
+cmrf$overall['Accuracy']
+```
+
+```{r outsampleerror}
+#rf expected out of sample error
+1-cmrf$overall['Accuracy']
+```
+The machine learning method with the best accuracy on the test data set is the random forest (0.9871). This is the one choose for the quiz prediction. The expected out of sample error of the random forest model is 1.3%.
+```{r quiz}
+#Quiz prediction with Random Forest Model
+predict(modFitrf,newdata=quiz[-length(test)])
+```
+The score obtained for the quizz is 20/20.
